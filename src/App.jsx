@@ -440,7 +440,7 @@ export default function App() {
           const msRunning = Math.min(now - appStartTimeRef.current, tenMinutes);
           const minutesRunning = msRunning / oneMinute;
 
-          if (minutesRunning >= 5 / 60) {
+          if (minutesRunning >= 2) {
             const averageBpm = blinkDatesRef.current.length / minutesRunning;
             if (averageBpm < 8) {
               setIsFatigued(true);
