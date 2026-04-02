@@ -409,7 +409,7 @@ export default function App() {
         >
           <div
             style={{
-              fontSize: '12px',
+              fontSize: 'clamp(9px, 1.5vw, 12px)',
               color: isFatigued ? '#FF3B30' : 'rgba(255,255,255,0.5)',
               marginBottom: '8px',
               fontWeight: 'bold',
@@ -417,12 +417,12 @@ export default function App() {
           >
             [ {status.toUpperCase()} ]
           </div>
-          <div style={{ fontSize: '28px', color: '#fff' }}>
+          <div style={{ fontSize: 'clamp(14px, 3vw, 28px)', color: '#fff' }}>
             SYS_BLINKS:{' '}
             <span style={{ color: 'rgba(255,255,255,0.7)' }}>{blinkCount}</span>
           </div>
           <div
-            style={{ fontSize: '28px', color: bpm < 8 ? '#FF3B30' : '#fff' }}
+            style={{ fontSize: 'clamp(14px, 3vw, 28px)', color: bpm < 8 ? '#FF3B30' : '#fff' }}
           >
             SYS_BPM: {bpm}
           </div>
@@ -460,9 +460,9 @@ export default function App() {
 
       {isFatigued && (
         <div style={warningOverlayStyle}>
-          <h1>⚠️ CRITICAL FATIGUE DETECTED</h1>
-          <p>Average blink rate dropped below healthy levels.</p>
-          <p>Implement the 20-20-20 rule immediately.</p>
+          <h1 style={{ fontSize: 'clamp(18px, 4vw, 32px)', margin: 0 }}>⚠️ CRITICAL FATIGUE DETECTED</h1>
+          <p style={{ fontSize: 'clamp(11px, 2vw, 16px)' }}>Average blink rate dropped below healthy levels.</p>
+          <p style={{ fontSize: 'clamp(11px, 2vw, 16px)' }}>Implement the 20-20-20 rule immediately.</p>
         </div>
       )}
     </div>
@@ -496,12 +496,12 @@ const canvasStyle = {
 
 const leftHudStyle = {
   position: 'absolute',
-  top: 30,
-  left: 30,
+  top: 'clamp(15px, 3vh, 30px)',
+  left: 'clamp(15px, 3vw, 30px)',
   zIndex: 10,
   display: 'flex',
   flexDirection: 'column',
-  gap: '20px',
+  gap: 'clamp(10px, 2vw, 20px)',
 };
 
 const counterStyle = {
@@ -509,7 +509,7 @@ const counterStyle = {
   fontFamily: '"JetBrains Mono", monospace',
   fontWeight: '400',
   background: 'rgba(0,0,0,0.6)',
-  padding: '20px',
+  padding: 'clamp(12px, 2vw, 20px)',
   borderRadius: '4px',
   border: '1px solid rgba(255,255,255,0.2)',
 };
@@ -521,14 +521,14 @@ const liveDataOverlayStyle = {
   pointerEvents: 'none',
   display: 'flex',
   flexDirection: 'column',
-  gap: '8px',
+  gap: 'clamp(5px, 1vw, 8px)',
 };
 const liveDataBoxStyle = {
   background: 'rgba(0,0,0,0.6)',
-  padding: '12px 15px',
+  padding: 'clamp(8px, 1.5vw, 12px) clamp(10px, 2vw, 15px)',
   borderRadius: '4px',
   borderLeft: '1px solid rgba(255,255,255,0.2)',
-  fontSize: '13px',
+  fontSize: 'clamp(10px, 1.5vw, 13px)',
   color: 'rgba(255,255,255,0.8)',
 };
 
@@ -539,7 +539,7 @@ const warningOverlayStyle = {
   transform: 'translate(-50%, -50%)',
   backgroundColor: 'rgba(255, 59, 48, 0.9)',
   color: 'white',
-  padding: '40px',
+  padding: 'clamp(20px, 4vw, 40px)',
   fontFamily: '"JetBrains Mono", monospace',
   textAlign: 'center',
   border: '1px solid white',
