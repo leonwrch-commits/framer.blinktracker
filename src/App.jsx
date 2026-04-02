@@ -26,7 +26,6 @@ export default function App() {
   const audioRef = useRef(new Audio('/alert.mp3'));
   const isRestingRef = useRef(false);
   const lastFaceDetectedRef = useRef(Date.now());
-  const earBufferRef = useRef([]);
   const earBaselineSamplesRef = useRef([]);
   const adaptiveThresholdRef = useRef(0.27);
   const workerRef = useRef(null);
@@ -54,7 +53,6 @@ export default function App() {
     setBpm(0);
     appStartTimeRef.current = Date.now();
     lastFaceDetectedRef.current = Date.now();
-    earBufferRef.current = [];
     earBaselineSamplesRef.current = [];
     adaptiveThresholdRef.current = 0.27;
     setStatus('System Active - Tracking HUD');
@@ -293,21 +291,16 @@ export default function App() {
 
           const avgEAR = (ear + lEAR) / 2;
 
-          // Smooth EAR over last 3 frames to reduce landmark jitter
-          earBufferRef.current.push(avgEAR);
-          if (earBufferRef.current.length > 3) earBufferRef.current.shift();
-          const smoothedEAR = earBufferRef.current.reduce((a, b) => a + b, 0) / earBufferRef.current.length;
-
-          // Calibration: collect 180 open-eye samples (~6s at 30fps) then lock threshold
-          if (earBaselineSamplesRef.current.length < 180 && smoothedEAR > 0.3) {
-            earBaselineSamplesRef.current.push(smoothedEAR);
-            if (earBaselineSamplesRef.current.length === 180) {
-              const baseline = earBaselineSamplesRef.current.reduce((a, b) => a + b, 0) / 180;
+          // Calibration: collect 90 open-eye samples (~3s at 30fps) then lock threshold
+          if (earBaselineSamplesRef.current.length < 90 && avgEAR > 0.32) {
+            earBaselineSamplesRef.current.push(avgEAR);
+            if (earBaselineSamplesRef.current.length === 90) {
+              const baseline = earBaselineSamplesRef.current.reduce((a, b) => a + b, 0) / 90;
               adaptiveThresholdRef.current = baseline * 0.65;
             }
           }
 
-          const isBlinkingNow = smoothedEAR < adaptiveThresholdRef.current;
+          const isBlinkingNow = avgEAR < adaptiveThresholdRef.current;
 
           // MATRIX SCRAMBLE TRIGGER
           if (isBlinkingNow && !wasBlinkingRef.current) {
