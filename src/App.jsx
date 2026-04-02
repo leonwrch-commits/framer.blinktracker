@@ -26,6 +26,9 @@ export default function App() {
   const audioRef = useRef(new Audio('/alert.mp3'));
   const isRestingRef = useRef(false);
   const lastFaceDetectedRef = useRef(Date.now());
+  const earBufferRef = useRef([]);
+  const earBaselineSamplesRef = useRef([]);
+  const adaptiveThresholdRef = useRef(0.27);
   const workerRef = useRef(null);
   const streamRef = useRef(null);
   const [isShutdown, setIsShutdown] = useState(false);
@@ -51,6 +54,9 @@ export default function App() {
     setBpm(0);
     appStartTimeRef.current = Date.now();
     lastFaceDetectedRef.current = Date.now();
+    earBufferRef.current = [];
+    earBaselineSamplesRef.current = [];
+    adaptiveThresholdRef.current = 0.27;
     setStatus('System Active - Tracking HUD');
   };
 
@@ -285,8 +291,23 @@ export default function App() {
           setCoordsRight({ x: Math.round(rCenterX), y: Math.round(rCenterY) });
           setCoordsLeft({ x: Math.round(lCenterX), y: Math.round(lCenterY) });
 
-          const threshold = 0.25;
-          const isBlinkingNow = ear < threshold && lEAR < threshold;
+          const avgEAR = (ear + lEAR) / 2;
+
+          // Smooth EAR over last 3 frames to reduce landmark jitter
+          earBufferRef.current.push(avgEAR);
+          if (earBufferRef.current.length > 3) earBufferRef.current.shift();
+          const smoothedEAR = earBufferRef.current.reduce((a, b) => a + b, 0) / earBufferRef.current.length;
+
+          // Collect baseline samples while eyes are clearly open
+          if (smoothedEAR > 0.3 && earBaselineSamplesRef.current.length < 60) {
+            earBaselineSamplesRef.current.push(smoothedEAR);
+            if (earBaselineSamplesRef.current.length === 60) {
+              const baseline = earBaselineSamplesRef.current.reduce((a, b) => a + b, 0) / 60;
+              adaptiveThresholdRef.current = baseline * 0.65;
+            }
+          }
+
+          const isBlinkingNow = smoothedEAR < adaptiveThresholdRef.current;
 
           // MATRIX SCRAMBLE TRIGGER
           if (isBlinkingNow && !wasBlinkingRef.current) {
@@ -300,7 +321,7 @@ export default function App() {
           } else {
             if (blinkStartTimeRef.current) {
               const durationClosed = now - blinkStartTimeRef.current;
-              if (durationClosed > 80 && durationClosed < 600) {
+              if (durationClosed > 60 && durationClosed < 600) {
                 totalBlinksRef.current += 1;
                 setBlinkCount(totalBlinksRef.current);
                 blinkDatesRef.current.push(now);
