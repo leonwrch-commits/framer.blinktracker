@@ -445,9 +445,6 @@ export default function App() {
             if (averageBpm < 8) {
               setIsFatigued(true);
               setStatus(`⚠️ FATIGUE ALERT (Avg: ${averageBpm.toFixed(1)} BPM)`);
-              audioRef.current
-                .play()
-                .catch((e) => console.log('Audio blocked.', e));
             } else {
               setIsFatigued(false);
               setStatus(`Eyes Healthy (Avg: ${averageBpm.toFixed(1)} BPM)`);
