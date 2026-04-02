@@ -16,6 +16,7 @@ export default function App() {
   const [coordsLeft, setCoordsLeft] = useState({ x: 0, y: 0 });
   const [status, setStatus] = useState('Initializing System...');
   const [isFatigued, setIsFatigued] = useState(false);
+  const [isResting, setIsResting] = useState(false);
 
   // Logic Refs
   const blinkDatesRef = useRef([]);
@@ -23,10 +24,34 @@ export default function App() {
   const blinkStartTimeRef = useRef(null);
   const appStartTimeRef = useRef(Date.now());
   const audioRef = useRef(new Audio('/alert.mp3'));
+  const isRestingRef = useRef(false);
+  const lastFaceDetectedRef = useRef(Date.now());
+  const workerRef = useRef(null);
+  const [isShutdown, setIsShutdown] = useState(false);
+  const isShutdownRef = useRef(false);
 
   // Effect Refs
   const wasBlinkingRef = useRef(false);
   const scrambleUntilRef = useRef(0);
+
+  const handleTakeBreak = () => {
+    isRestingRef.current = true;
+    setIsResting(true);
+    setIsFatigued(false);
+  };
+
+  const handleIAmBack = () => {
+    isRestingRef.current = false;
+    setIsResting(false);
+    setIsFatigued(false);
+    blinkDatesRef.current = [];
+    totalBlinksRef.current = 0;
+    setBlinkCount(0);
+    setBpm(0);
+    appStartTimeRef.current = Date.now();
+    lastFaceDetectedRef.current = Date.now();
+    setStatus('System Active - Tracking HUD');
+  };
 
   // Smoothed XY coords and positions for floating labels
   const smoothedRightRef = useRef({ x: 0, y: 0 });
@@ -85,11 +110,25 @@ export default function App() {
       `;
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       worker = new Worker(URL.createObjectURL(blob));
+      workerRef.current = worker;
       worker.onmessage = () => {
         if (!isProcessingFrame) renderFrame();
       };
       worker.postMessage('start');
     };
+
+    const handleMessage = (e) => {
+      if (e.data?.type === 'SHUTDOWN') {
+        isShutdownRef.current = true;
+        setIsShutdown(true);
+        workerRef.current?.postMessage('stop');
+      } else if (e.data?.type === 'RESUME') {
+        isShutdownRef.current = false;
+        setIsShutdown(false);
+        workerRef.current?.postMessage('start');
+      }
+    };
+    window.addEventListener('message', handleMessage);
 
     // --- REFINED HUD BOX DRAWING (No text, just geometry) ---
     const drawEyeBox = (ctx, inPt, outPt, topPt, botPt, isBlinking) => {
@@ -123,6 +162,7 @@ export default function App() {
     };
 
     const renderFrame = async () => {
+      if (isRestingRef.current || isShutdownRef.current) return;
       if (
         !videoRef.current ||
         !faceDetector ||
@@ -189,6 +229,7 @@ export default function App() {
 
         // 2. Face Tracking & HUD
         if (faces && faces.length > 0) {
+          lastFaceDetectedRef.current = now;
           const keypoints = faces[0].keypoints;
 
           const rTop = keypoints[159];
@@ -352,26 +393,31 @@ export default function App() {
 
         const tenMinutes = 10 * 60 * 1000;
         const oneMinute = 60 * 1000;
+        const eyesLost = now - lastFaceDetectedRef.current > 15000;
 
         blinkDatesRef.current = blinkDatesRef.current.filter(
           (t) => t > now - tenMinutes,
         );
         setBpm(blinkDatesRef.current.filter((t) => t > now - oneMinute).length);
 
-        const msRunning = Math.min(now - appStartTimeRef.current, tenMinutes);
-        const minutesRunning = msRunning / oneMinute;
+        if (eyesLost) {
+          setStatus('No Face Detected...');
+        } else {
+          const msRunning = Math.min(now - appStartTimeRef.current, tenMinutes);
+          const minutesRunning = msRunning / oneMinute;
 
-        if (minutesRunning >= 2) {
-          const averageBpm = blinkDatesRef.current.length / minutesRunning;
-          if (averageBpm < 8) {
-            setIsFatigued(true);
-            setStatus(`⚠️ FATIGUE ALERT (Avg: ${averageBpm.toFixed(1)} BPM)`);
-            audioRef.current
-              .play()
-              .catch((e) => console.log('Audio blocked.', e));
-          } else {
-            setIsFatigued(false);
-            setStatus(`Eyes Healthy (Avg: ${averageBpm.toFixed(1)} BPM)`);
+          if (minutesRunning >= 2) {
+            const averageBpm = blinkDatesRef.current.length / minutesRunning;
+            if (averageBpm < 8) {
+              setIsFatigued(true);
+              setStatus(`⚠️ FATIGUE ALERT (Avg: ${averageBpm.toFixed(1)} BPM)`);
+              audioRef.current
+                .play()
+                .catch((e) => console.log('Audio blocked.', e));
+            } else {
+              setIsFatigued(false);
+              setStatus(`Eyes Healthy (Avg: ${averageBpm.toFixed(1)} BPM)`);
+            }
           }
         }
       } catch (error) {
@@ -384,6 +430,7 @@ export default function App() {
     init();
 
     return () => {
+      window.removeEventListener('message', handleMessage);
       if (worker) {
         worker.postMessage('stop');
         worker.terminate();
@@ -458,11 +505,28 @@ export default function App() {
         )}
       </div>
 
-      {isFatigued && (
+      {isFatigued && !isResting && (
         <div style={warningOverlayStyle}>
-          <h1 style={{ fontSize: 'clamp(18px, 4vw, 32px)', margin: 0 }}>⚠️ CRITICAL FATIGUE DETECTED</h1>
-          <p style={{ fontSize: 'clamp(11px, 2vw, 16px)' }}>Average blink rate dropped below healthy levels.</p>
-          <p style={{ fontSize: 'clamp(11px, 2vw, 16px)' }}>Implement the 20-20-20 rule immediately.</p>
+          <h1 style={{ fontSize: 'clamp(18px, 4vw, 32px)', margin: '0 0 12px 0' }}>⚠️ CRITICAL FATIGUE DETECTED</h1>
+          <p style={{ fontSize: 'clamp(11px, 2vw, 16px)', margin: '0 0 6px 0' }}>Average blink rate dropped below healthy levels.</p>
+          <p style={{ fontSize: 'clamp(11px, 2vw, 16px)', margin: '0 0 20px 0' }}>Implement the 20-20-20 rule immediately.</p>
+          <button onClick={handleTakeBreak} style={breakButtonStyle}>
+            Okay, I'll take a break
+          </button>
+        </div>
+      )}
+
+      {isShutdown && (
+        <div style={{ position: 'absolute', inset: 0, background: '#000', zIndex: 30 }} />
+      )}
+
+      {isResting && (
+        <div style={restOverlayStyle}>
+          <p style={{ fontSize: 'clamp(11px, 2vw, 14px)', margin: '0 0 6px 0', color: 'rgba(255,255,255,0.5)' }}>REST MODE ACTIVE</p>
+          <p style={{ fontSize: 'clamp(13px, 2.5vw, 18px)', margin: '0 0 20px 0' }}>Look away from the screen.</p>
+          <button onClick={handleIAmBack} style={backButtonStyle}>
+            I am back
+          </button>
         </div>
       )}
     </div>
@@ -545,4 +609,43 @@ const warningOverlayStyle = {
   border: '1px solid white',
   zIndex: 20,
   borderRadius: '4px',
+};
+
+const breakButtonStyle = {
+  fontFamily: '"JetBrains Mono", monospace',
+  fontSize: 'clamp(11px, 1.8vw, 14px)',
+  background: 'rgba(255,255,255,0.15)',
+  color: '#fff',
+  border: '1px solid rgba(255,255,255,0.6)',
+  borderRadius: '4px',
+  padding: '10px 20px',
+  cursor: 'pointer',
+  letterSpacing: '0.05em',
+};
+
+const restOverlayStyle = {
+  position: 'absolute',
+  top: '50%',
+  left: '50%',
+  transform: 'translate(-50%, -50%)',
+  backgroundColor: 'rgba(0,0,0,0.85)',
+  color: 'white',
+  padding: 'clamp(20px, 4vw, 40px)',
+  fontFamily: '"JetBrains Mono", monospace',
+  textAlign: 'center',
+  border: '1px solid rgba(255,255,255,0.2)',
+  zIndex: 20,
+  borderRadius: '4px',
+};
+
+const backButtonStyle = {
+  fontFamily: '"JetBrains Mono", monospace',
+  fontSize: 'clamp(11px, 1.8vw, 14px)',
+  background: 'rgba(255,255,255,0.1)',
+  color: '#fff',
+  border: '1px solid rgba(255,255,255,0.4)',
+  borderRadius: '4px',
+  padding: '10px 24px',
+  cursor: 'pointer',
+  letterSpacing: '0.05em',
 };
