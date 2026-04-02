@@ -286,7 +286,7 @@ export default function App() {
           setCoordsLeft({ x: Math.round(lCenterX), y: Math.round(lCenterY) });
 
           const threshold = 0.25;
-          const isBlinkingNow = ear < threshold;
+          const isBlinkingNow = ear < threshold && lEAR < threshold;
 
           // MATRIX SCRAMBLE TRIGGER
           if (isBlinkingNow && !wasBlinkingRef.current) {
@@ -300,7 +300,7 @@ export default function App() {
           } else {
             if (blinkStartTimeRef.current) {
               const durationClosed = now - blinkStartTimeRef.current;
-              if (durationClosed > 50 && durationClosed < 600) {
+              if (durationClosed > 80 && durationClosed < 600) {
                 totalBlinksRef.current += 1;
                 setBlinkCount(totalBlinksRef.current);
                 blinkDatesRef.current.push(now);
