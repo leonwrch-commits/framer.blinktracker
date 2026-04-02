@@ -276,13 +276,13 @@ export default function App() {
           );
           const mmPerPx = eyeDistPx > 0 ? 63 / eyeDistPx : 0;
 
-          const vDist = Math.abs(rTop.y - rBot.y);
-          const hDist = Math.abs(rIn.x - rOut.x);
+          const vDist = Math.hypot(rTop.x - rBot.x, rTop.y - rBot.y);
+          const hDist = Math.hypot(rIn.x - rOut.x, rIn.y - rOut.y);
           const ear = hDist > 0 ? vDist / hDist : 0;
           setLiveRatioRight(ear.toFixed(3));
 
-          const lVDist = Math.abs(lTop.y - lBot.y);
-          const lHDist = Math.abs(lIn.x - lOut.x);
+          const lVDist = Math.hypot(lTop.x - lBot.x, lTop.y - lBot.y);
+          const lHDist = Math.hypot(lIn.x - lOut.x, lIn.y - lOut.y);
           const lEAR = lHDist > 0 ? lVDist / lHDist : 0;
           setLiveRatioLeft(lEAR.toFixed(3));
 
