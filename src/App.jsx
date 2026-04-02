@@ -298,13 +298,22 @@ export default function App() {
           if (earBufferRef.current.length > 3) earBufferRef.current.shift();
           const smoothedEAR = earBufferRef.current.reduce((a, b) => a + b, 0) / earBufferRef.current.length;
 
-          // Collect baseline samples while eyes are clearly open
-          if (smoothedEAR > 0.3 && earBaselineSamplesRef.current.length < 60) {
+          // Phase 1: initial calibration — collect 180 open-eye samples (~6s at 30fps)
+          const calibrated = earBaselineSamplesRef.current.length >= 180;
+          if (!calibrated && smoothedEAR > 0.3) {
             earBaselineSamplesRef.current.push(smoothedEAR);
-            if (earBaselineSamplesRef.current.length === 60) {
-              const baseline = earBaselineSamplesRef.current.reduce((a, b) => a + b, 0) / 60;
+            if (earBaselineSamplesRef.current.length === 180) {
+              const baseline = earBaselineSamplesRef.current.reduce((a, b) => a + b, 0) / 180;
               adaptiveThresholdRef.current = baseline * 0.65;
             }
+          }
+
+          // Phase 2: continuous slow EMA drift correction after calibration
+          // Only updates when eyes are clearly open, so blinks don't corrupt the baseline
+          if (calibrated && smoothedEAR > adaptiveThresholdRef.current * 1.5) {
+            const currentBaseline = adaptiveThresholdRef.current / 0.65;
+            const updatedBaseline = currentBaseline * 0.995 + smoothedEAR * 0.005;
+            adaptiveThresholdRef.current = updatedBaseline * 0.65;
           }
 
           const isBlinkingNow = smoothedEAR < adaptiveThresholdRef.current;
