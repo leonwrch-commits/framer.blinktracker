@@ -27,6 +27,7 @@ export default function App() {
   const isRestingRef = useRef(false);
   const lastFaceDetectedRef = useRef(Date.now());
   const workerRef = useRef(null);
+  const streamRef = useRef(null);
   const [isShutdown, setIsShutdown] = useState(false);
   const isShutdownRef = useRef(false);
 
@@ -84,6 +85,7 @@ export default function App() {
         });
 
         if (videoRef.current) {
+          streamRef.current = stream;
           videoRef.current.srcObject = stream;
           videoRef.current.onloadedmetadata = () => {
             videoRef.current.play();
@@ -122,10 +124,21 @@ export default function App() {
         isShutdownRef.current = true;
         setIsShutdown(true);
         workerRef.current?.postMessage('stop');
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        if (videoRef.current) videoRef.current.srcObject = null;
       } else if (e.data?.type === 'RESUME') {
         isShutdownRef.current = false;
         setIsShutdown(false);
-        workerRef.current?.postMessage('start');
+        navigator.mediaDevices
+          .getUserMedia({ video: { width: 640, height: 480 } })
+          .then((stream) => {
+            streamRef.current = stream;
+            if (videoRef.current) {
+              videoRef.current.srcObject = stream;
+              videoRef.current.play();
+            }
+            workerRef.current?.postMessage('start');
+          });
       }
     };
     window.addEventListener('message', handleMessage);
