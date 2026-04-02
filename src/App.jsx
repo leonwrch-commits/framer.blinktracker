@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
+import * as poseDetection from '@tensorflow-models/pose-detection';
 
 export default function App() {
   const videoRef = useRef(null);
@@ -9,8 +10,11 @@ export default function App() {
   // UI State
   const [blinkCount, setBlinkCount] = useState(0);
   const [bpm, setBpm] = useState(0);
-  const [liveRatio, setLiveRatio] = useState(0);
-  const [status, setStatus] = useState('Loading AI...');
+  const [liveRatioRight, setLiveRatioRight] = useState(0);
+  const [liveRatioLeft, setLiveRatioLeft] = useState(0);
+  const [coordsRight, setCoordsRight] = useState({ x: 0, y: 0 });
+  const [coordsLeft, setCoordsLeft] = useState({ x: 0, y: 0 });
+  const [status, setStatus] = useState('Initializing System...');
   const [isFatigued, setIsFatigued] = useState(false);
 
   // Logic Refs
@@ -20,20 +24,36 @@ export default function App() {
   const appStartTimeRef = useRef(Date.now());
   const audioRef = useRef(new Audio('/alert.mp3'));
 
+  // Effect Refs
+  const wasBlinkingRef = useRef(false);
+  const scrambleUntilRef = useRef(0);
+
+  // Smoothed XY coords and positions for floating labels
+  const smoothedRightRef = useRef({ x: 0, y: 0 });
+  const smoothedLeftRef = useRef({ x: 0, y: 0 });
+  const smoothedRightEdgeRef = useRef({ x: 0, y: 0 });
+  const smoothedLeftEdgeRef = useRef({ x: 0, y: 0 });
+
   useEffect(() => {
-    let detector;
+    let faceDetector;
+    let poseDetector;
     let worker;
-    let isProcessingFrame = false; // Prevents the worker from piling up frames
+    let isProcessingFrame = false;
 
     const init = async () => {
       try {
+        setStatus('Loading AI Models...');
         await tf.ready();
-        detector = await faceLandmarksDetection.createDetector(
+
+        faceDetector = await faceLandmarksDetection.createDetector(
           faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
           { runtime: 'tfjs', refineLandmarks: false },
         );
-        setStatus('AI Ready. Accessing Camera...');
+        poseDetector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+        );
 
+        setStatus('Accessing Video Stream...');
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480 },
         });
@@ -43,51 +63,76 @@ export default function App() {
           videoRef.current.onloadedmetadata = () => {
             videoRef.current.play();
             appStartTimeRef.current = Date.now();
-            setStatus('Tracking Active - Gathering Baseline...');
-            startWorker(); // Start the background heartbeat
+            setStatus('System Active - Tracking HUD');
+            startWorker();
           };
         }
       } catch (err) {
-        setStatus('Error: ' + err.message);
+        setStatus('System Error: ' + err.message);
       }
     };
 
-    // --- THE BACKGROUND WEB WORKER ---
     const startWorker = () => {
-      // 1. Write the worker code as a string
       const workerCode = `
         let timer = null;
         self.onmessage = function(e) {
           if (e.data === 'start') {
-            // Send a "tick" 30 times a second (~33ms)
             timer = setInterval(() => self.postMessage('tick'), 33);
           } else if (e.data === 'stop') {
             clearInterval(timer);
           }
         };
       `;
-
-      // 2. Turn it into a URL so the browser can run it
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       worker = new Worker(URL.createObjectURL(blob));
-
-      // 3. Listen for the heartbeat
       worker.onmessage = () => {
-        if (!isProcessingFrame) {
-          renderFrame();
-        }
+        if (!isProcessingFrame) renderFrame();
       };
-
-      // 4. Start the pacemaker
       worker.postMessage('start');
     };
 
-    // The actual AI scanning function (No longer uses requestAnimationFrame)
+    // --- REFINED HUD BOX DRAWING (No text, just geometry) ---
+    const drawEyeBox = (ctx, inPt, outPt, topPt, botPt, isBlinking) => {
+      const padX = 2;
+      const padY = 3;
+
+      const minX = Math.min(inPt.x, outPt.x) - padX;
+      const maxX = Math.max(inPt.x, outPt.x) + padX;
+      const minY = Math.min(topPt.y, botPt.y) - padY;
+      const maxY = Math.max(topPt.y, botPt.y) + padY;
+      const w = maxX - minX;
+      const h = maxY - minY;
+
+      ctx.strokeStyle = isBlinking
+        ? 'rgba(255, 255, 255, 1)'
+        : 'rgba(255, 255, 255, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(minX, minY, w, h);
+
+      if (isBlinking) {
+        ctx.beginPath();
+        ctx.moveTo(minX, minY);
+        ctx.lineTo(maxX, maxY);
+        ctx.moveTo(maxX, minY);
+        ctx.lineTo(minX, maxY);
+        ctx.stroke();
+      }
+
+      // Return bounds so we can anchor the text perfectly
+      return { minX, maxX, minY, maxY, w, h };
+    };
+
     const renderFrame = async () => {
-      if (!videoRef.current || !detector || !canvasRef.current) return;
+      if (
+        !videoRef.current ||
+        !faceDetector ||
+        !poseDetector ||
+        !canvasRef.current
+      )
+        return;
       if (videoRef.current.readyState < 2) return;
 
-      isProcessingFrame = true; // Lock the frame so the worker doesn't overwhelm the CPU
+      isProcessingFrame = true;
 
       const videoWidth = videoRef.current.videoWidth;
       const videoHeight = videoRef.current.videoHeight;
@@ -97,41 +142,110 @@ export default function App() {
       canvasRef.current.width = videoWidth;
       canvasRef.current.height = videoHeight;
 
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, videoWidth, videoHeight);
+      ctx.globalCompositeOperation = 'source-over';
+
       try {
-        const faces = await detector.estimateFaces(videoRef.current, {
+        const faces = await faceDetector.estimateFaces(videoRef.current, {
           flipHorizontal: false,
         });
-        const ctx = canvasRef.current.getContext('2d');
-        ctx.clearRect(0, 0, videoWidth, videoHeight);
-
+        const poses = await poseDetector.estimatePoses(videoRef.current, {
+          flipHorizontal: false,
+        });
         const now = Date.now();
 
+        // 1. Draw Arm Skeleton
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 1;
+
+        if (poses && poses.length > 0) {
+          const pts = poses[0].keypoints;
+          const drawLine = (a, b) => {
+            if (pts[a].score > 0.3 && pts[b].score > 0.3) {
+              ctx.beginPath();
+              ctx.moveTo(pts[a].x, pts[a].y);
+              ctx.lineTo(pts[b].x, pts[b].y);
+              ctx.stroke();
+            }
+          };
+
+          drawLine(5, 6);
+          drawLine(5, 7);
+          drawLine(7, 9);
+          drawLine(6, 8);
+          drawLine(8, 10);
+
+          const activeJoints = [5, 6, 7, 8, 9, 10];
+          activeJoints.forEach((i) => {
+            if (pts[i].score > 0.3) {
+              ctx.beginPath();
+              ctx.arc(pts[i].x, pts[i].y, 2, 0, 2 * Math.PI);
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+              ctx.fill();
+            }
+          });
+        }
+
+        // 2. Face Tracking & HUD
         if (faces && faces.length > 0) {
           const keypoints = faces[0].keypoints;
 
-          const topLid = keypoints[159];
-          const bottomLid = keypoints[145];
-          const innerCorner = keypoints[133];
-          const outerCorner = keypoints[33];
+          const rTop = keypoints[159];
+          const rBot = keypoints[145];
+          const rIn = keypoints[133];
+          const rOut = keypoints[33];
 
-          const vDist = Math.abs(topLid.y - bottomLid.y);
-          const hDist = Math.abs(innerCorner.x - outerCorner.x);
+          const lTop = keypoints[386];
+          const lBot = keypoints[374];
+          const lIn = keypoints[362];
+          const lOut = keypoints[263];
+
+          const lCenterX = (lIn.x + lOut.x) / 2;
+          const lCenterY = (lTop.y + lBot.y) / 2;
+          const rCenterX = (rIn.x + rOut.x) / 2;
+          const rCenterY = (rTop.y + rBot.y) / 2;
+
+          const lerpFactor = 0.06;
+          smoothedRightRef.current.x += lerpFactor * (lCenterX - smoothedRightRef.current.x);
+          smoothedRightRef.current.y += lerpFactor * (lCenterY - smoothedRightRef.current.y);
+          smoothedLeftRef.current.x += lerpFactor * (rCenterX - smoothedLeftRef.current.x);
+          smoothedLeftRef.current.y += lerpFactor * (rCenterY - smoothedLeftRef.current.y);
+
+          const eyeDistPx = Math.hypot(
+            lCenterX - rCenterX,
+            lCenterY - rCenterY,
+          );
+          const mmPerPx = eyeDistPx > 0 ? 63 / eyeDistPx : 0;
+
+          const vDist = Math.abs(rTop.y - rBot.y);
+          const hDist = Math.abs(rIn.x - rOut.x);
           const ear = hDist > 0 ? vDist / hDist : 0;
+          setLiveRatioRight(ear.toFixed(3));
 
-          setLiveRatio(ear.toFixed(3));
+          const lVDist = Math.abs(lTop.y - lBot.y);
+          const lHDist = Math.abs(lIn.x - lOut.x);
+          const lEAR = lHDist > 0 ? lVDist / lHDist : 0;
+          setLiveRatioLeft(lEAR.toFixed(3));
+
+          setCoordsRight({ x: Math.round(rCenterX), y: Math.round(rCenterY) });
+          setCoordsLeft({ x: Math.round(lCenterX), y: Math.round(lCenterY) });
 
           const threshold = 0.25;
           const isBlinkingNow = ear < threshold;
 
+          // MATRIX SCRAMBLE TRIGGER
+          if (isBlinkingNow && !wasBlinkingRef.current) {
+            scrambleUntilRef.current = now + 150;
+          }
+          wasBlinkingRef.current = isBlinkingNow;
+          const isScrambling = now < scrambleUntilRef.current;
+
           if (isBlinkingNow) {
-            if (!blinkStartTimeRef.current) {
-              blinkStartTimeRef.current = now;
-            }
-            ctx.strokeStyle = '#FF3B30';
+            if (!blinkStartTimeRef.current) blinkStartTimeRef.current = now;
           } else {
             if (blinkStartTimeRef.current) {
               const durationClosed = now - blinkStartTimeRef.current;
-
               if (durationClosed > 50 && durationClosed < 600) {
                 totalBlinksRef.current += 1;
                 setBlinkCount(totalBlinksRef.current);
@@ -139,44 +253,119 @@ export default function App() {
               }
               blinkStartTimeRef.current = null;
             }
-            ctx.strokeStyle = '#00FF96';
           }
 
-          ctx.lineWidth = 3;
-          [keypoints[145], keypoints[374]].forEach((pt) => {
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, isBlinkingNow ? 15 : 8, 0, 2 * Math.PI);
-            ctx.stroke();
-          });
+          // 3. Render Eye Boxes and retrieve exact bounds
+          // rBox is Viewer's Left Eye | lBox is Viewer's Right Eye
+          const rBox = drawEyeBox(ctx, rIn, rOut, rTop, rBot, isBlinkingNow);
+          const lBox = drawEyeBox(ctx, lIn, lOut, lTop, lBot, isBlinkingNow);
+
+          // Smooth box edge positions for label anchors
+          smoothedRightEdgeRef.current.x += lerpFactor * (lBox.minX - smoothedRightEdgeRef.current.x);
+          smoothedRightEdgeRef.current.y += lerpFactor * (lBox.minY - smoothedRightEdgeRef.current.y);
+          smoothedLeftEdgeRef.current.x += lerpFactor * (rBox.maxX - smoothedLeftEdgeRef.current.x);
+          smoothedLeftEdgeRef.current.y += lerpFactor * (rBox.minY - smoothedLeftEdgeRef.current.y);
+
+          // 4. Custom Permanent Text Layout
+          if (mmPerPx > 0) {
+            const areaR = Math.round(rBox.w * rBox.h * (mmPerPx * mmPerPx));
+            const areaL = Math.round(lBox.w * lBox.h * (mmPerPx * mmPerPx));
+
+            let textLeftEyeMsg = `${areaR}`; // Area of left eye (rBox)
+            let textRightEyeMsg = `${areaL}`; // Area of right eye (lBox)
+
+            if (isScrambling) {
+              const chars = '0123456789!@#$%&*+';
+              textLeftEyeMsg = Array.from(
+                { length: 4 },
+                () => chars[Math.floor(Math.random() * chars.length)],
+              ).join('');
+              textRightEyeMsg = Array.from(
+                { length: 4 },
+                () => chars[Math.floor(Math.random() * chars.length)],
+              ).join('');
+            }
+
+            ctx.save();
+            ctx.scale(-1, 1); // Un-mirror for text readability
+
+            ctx.fillStyle = isBlinkingNow
+              ? 'rgba(255, 255, 255, 1)'
+              : 'rgba(255, 255, 255, 0.6)';
+            ctx.textBaseline = 'middle';
+
+            // --- The "Overload" Logic (Anchoring to Viewer's Right Eye / lBox) ---
+            // Calculate center and right edge of Viewer's Right Eye in un-mirrored space
+            const vRightBoxFloatOver = -(lBox.minX - 25); // Over right eye box right edge
+            const vRightBoxFloatFar = -(lBox.minX - 70); // Floating far right, near head
+            const vRightBoxY = lBox.minY + lBox.h / 2;
+
+            ctx.font = '12px monospace';
+
+            // Left eye area: over the right eye box
+            ctx.textAlign = 'center';
+            ctx.fillText(textLeftEyeMsg, vRightBoxFloatOver, vRightBoxY);
+
+            // Right eye area: floating right, next to head
+            ctx.textAlign = 'center';
+            ctx.fillText(textRightEyeMsg, vRightBoxFloatFar, vRightBoxY);
+
+            // --- XY Coordinates floating around the head ---
+            ctx.font = '10px monospace';
+            ctx.fillStyle = isBlinkingNow
+              ? 'rgba(255, 255, 255, 1)'
+              : 'rgba(255, 255, 255, 0.4)';
+
+            // Viewer's right eye coords — further above and to the right of the head
+            ctx.textAlign = 'left';
+            ctx.fillText(
+              `X:${Math.round(smoothedRightRef.current.x)}`,
+              -(smoothedRightEdgeRef.current.x - 55),
+              smoothedRightEdgeRef.current.y - 90,
+            );
+            ctx.fillText(
+              `Y:${Math.round(smoothedRightRef.current.y)}`,
+              -(smoothedRightEdgeRef.current.x - 55),
+              smoothedRightEdgeRef.current.y - 77,
+            );
+
+            // Viewer's left eye coords — further above and to the left of the head
+            ctx.textAlign = 'right';
+            ctx.fillText(
+              `X:${Math.round(smoothedLeftRef.current.x)}`,
+              -(smoothedLeftEdgeRef.current.x + 55),
+              smoothedLeftEdgeRef.current.y - 90,
+            );
+            ctx.fillText(
+              `Y:${Math.round(smoothedLeftRef.current.y)}`,
+              -(smoothedLeftEdgeRef.current.x + 55),
+              smoothedLeftEdgeRef.current.y - 77,
+            );
+
+            ctx.restore();
+          }
         } else {
-          setLiveRatio(0);
+          setLiveRatioRight(0);
+          setLiveRatioLeft(0);
           blinkStartTimeRef.current = null;
         }
 
-        // --- TREND ANALYSIS ---
         const tenMinutes = 10 * 60 * 1000;
         const oneMinute = 60 * 1000;
 
         blinkDatesRef.current = blinkDatesRef.current.filter(
           (t) => t > now - tenMinutes,
         );
-
-        const blinksLastMinute = blinkDatesRef.current.filter(
-          (t) => t > now - oneMinute,
-        ).length;
-        setBpm(blinksLastMinute);
+        setBpm(blinkDatesRef.current.filter((t) => t > now - oneMinute).length);
 
         const msRunning = Math.min(now - appStartTimeRef.current, tenMinutes);
         const minutesRunning = msRunning / oneMinute;
 
         if (minutesRunning >= 2) {
           const averageBpm = blinkDatesRef.current.length / minutesRunning;
-
           if (averageBpm < 8) {
             setIsFatigued(true);
-            setStatus(
-              `⚠️ FATIGUE DETECTED (Avg: ${averageBpm.toFixed(1)} BPM)`,
-            );
+            setStatus(`⚠️ FATIGUE ALERT (Avg: ${averageBpm.toFixed(1)} BPM)`);
             audioRef.current
               .play()
               .catch((e) => console.log('Audio blocked.', e));
@@ -184,22 +373,17 @@ export default function App() {
             setIsFatigued(false);
             setStatus(`Eyes Healthy (Avg: ${averageBpm.toFixed(1)} BPM)`);
           }
-        } else {
-          setStatus(
-            `Gathering baseline... (${Math.floor(minutesRunning * 60)}s / 120s)`,
-          );
         }
       } catch (error) {
-        console.error('AI Scanning Error:', error);
+        console.error('System Error during Scanning:', error);
       }
 
-      isProcessingFrame = false; // Unlock so the next worker tick can process
+      isProcessingFrame = false;
     };
 
     init();
 
     return () => {
-      // Clean up everything when component unmounts
       if (worker) {
         worker.postMessage('stop');
         worker.terminate();
@@ -215,59 +399,76 @@ export default function App() {
       <video ref={videoRef} style={videoStyle} muted playsInline />
       <canvas ref={canvasRef} style={canvasStyle} />
 
-      <div
-        style={{
-          ...counterStyle,
-          borderColor: isFatigued ? '#FF3B30' : '#333',
-        }}
-      >
+      {/* HUD Container (Top Left) */}
+      <div style={leftHudStyle}>
         <div
           style={{
-            fontSize: '14px',
-            color: isFatigued ? '#FF3B30' : '#aaa',
-            marginBottom: '10px',
-            fontWeight: 'bold',
+            ...counterStyle,
+            borderColor: isFatigued ? '#FF3B30' : 'rgba(255,255,255,0.2)',
           }}
         >
-          {status}
-        </div>
-        <div style={{ fontSize: '32px', marginBottom: '5px' }}>
-          BLINKS: <span style={{ color: '#fff' }}>{blinkCount}</span>
-        </div>
-        <div
-          style={{ fontSize: '32px', color: bpm < 8 ? '#FF3B30' : '#00FF96' }}
-        >
-          LIVE BPM: {bpm}
-        </div>
-        <div
-          style={{
-            marginTop: '20px',
-            padding: '10px',
-            border: '1px solid #444',
-            backgroundColor: 'rgba(0,0,0,0.5)',
-          }}
-        >
-          <div style={{ color: 'yellow', fontSize: '18px' }}>
-            EAR RATIO: {liveRatio}
+          <div
+            style={{
+              fontSize: '12px',
+              color: isFatigued ? '#FF3B30' : 'rgba(255,255,255,0.5)',
+              marginBottom: '8px',
+              fontWeight: 'bold',
+            }}
+          >
+            [ {status.toUpperCase()} ]
           </div>
-          <div style={{ fontSize: '12px', color: '#888' }}>
-            Calibrated Threshold: 0.25
+          <div style={{ fontSize: '28px', color: '#fff' }}>
+            SYS_BLINKS:{' '}
+            <span style={{ color: 'rgba(255,255,255,0.7)' }}>{blinkCount}</span>
+          </div>
+          <div
+            style={{ fontSize: '28px', color: bpm < 8 ? '#FF3B30' : '#fff' }}
+          >
+            SYS_BPM: {bpm}
           </div>
         </div>
+
+        {bpm > 0 && (
+          <div style={liveDataOverlayStyle}>
+            <div
+              style={{
+                ...liveDataBoxStyle,
+                borderLeft:
+                  liveRatioRight < 0.25
+                    ? '2px solid #fff'
+                    : '1px solid rgba(255,255,255,0.2)',
+              }}
+            >
+              [ RIGHT EYE EAR:{liveRatioRight} ]<br />[ COORDS X:{coordsRight.x}{' '}
+              Y:{coordsRight.y} ]
+            </div>
+            <div
+              style={{
+                ...liveDataBoxStyle,
+                borderLeft:
+                  liveRatioLeft < 0.25
+                    ? '2px solid #fff'
+                    : '1px solid rgba(255,255,255,0.2)',
+              }}
+            >
+              [ LEFT EYE EAR:{liveRatioLeft} ]<br />[ COORDS X:{coordsLeft.x} Y:
+              {coordsLeft.y} ]
+            </div>
+          </div>
+        )}
       </div>
 
       {isFatigued && (
         <div style={warningOverlayStyle}>
-          <h1>CRITICAL EYE STRAIN DETECTED</h1>
-          <p>Your average blink rate has dropped below healthy levels.</p>
-          <p>Look at something 20 feet away for 20 seconds.</p>
+          <h1>⚠️ CRITICAL FATIGUE DETECTED</h1>
+          <p>Average blink rate dropped below healthy levels.</p>
+          <p>Implement the 20-20-20 rule immediately.</p>
         </div>
       )}
     </div>
   );
 }
 
-// --- Styles ---
 const containerStyle = {
   position: 'relative',
   width: '100vw',
@@ -280,6 +481,7 @@ const videoStyle = {
   height: '100%',
   objectFit: 'cover',
   transform: 'scaleX(-1)',
+  filter: 'brightness(0.6)',
 };
 const canvasStyle = {
   position: 'absolute',
@@ -289,21 +491,47 @@ const canvasStyle = {
   height: '100%',
   objectFit: 'cover',
   transform: 'scaleX(-1)',
+  zIndex: 1,
 };
-const counterStyle = {
+
+const leftHudStyle = {
   position: 'absolute',
   top: 30,
   left: 30,
-  color: '#00FF96',
-  fontFamily: 'monospace',
-  fontWeight: 'bold',
-  background: 'rgba(0,0,0,0.85)',
-  padding: '25px',
-  borderRadius: '12px',
-  border: '2px solid #333',
   zIndex: 10,
-  transition: 'border-color 0.3s ease',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '20px',
 };
+
+const counterStyle = {
+  color: '#fff',
+  fontFamily: '"JetBrains Mono", monospace',
+  fontWeight: '400',
+  background: 'rgba(0,0,0,0.6)',
+  padding: '20px',
+  borderRadius: '4px',
+  border: '1px solid rgba(255,255,255,0.2)',
+};
+
+const liveDataOverlayStyle = {
+  color: '#fff',
+  fontFamily: '"JetBrains Mono", monospace',
+  textTransform: 'uppercase',
+  pointerEvents: 'none',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
+};
+const liveDataBoxStyle = {
+  background: 'rgba(0,0,0,0.6)',
+  padding: '12px 15px',
+  borderRadius: '4px',
+  borderLeft: '1px solid rgba(255,255,255,0.2)',
+  fontSize: '13px',
+  color: 'rgba(255,255,255,0.8)',
+};
+
 const warningOverlayStyle = {
   position: 'absolute',
   top: '50%',
@@ -312,10 +540,9 @@ const warningOverlayStyle = {
   backgroundColor: 'rgba(255, 59, 48, 0.9)',
   color: 'white',
   padding: '40px',
-  fontFamily: 'monospace',
+  fontFamily: '"JetBrains Mono", monospace',
   textAlign: 'center',
-  border: '4px solid white',
+  border: '1px solid white',
   zIndex: 20,
-  boxShadow: '0 0 100px rgba(255,0,0,0.8)',
-  borderRadius: '12px',
+  borderRadius: '4px',
 };
