@@ -438,6 +438,7 @@ export default function App() {
             if (averageBpm < 8) {
               setIsFatigued(true);
               setStatus(`⚠️ FATIGUE ALERT (Avg: ${averageBpm.toFixed(1)} BPM)`);
+              window.parent.postMessage({ type: 'FATIGUE_ALERT' }, '*');
             } else {
               setIsFatigued(false);
               setStatus(`Eyes Healthy (Avg: ${averageBpm.toFixed(1)} BPM)`);
