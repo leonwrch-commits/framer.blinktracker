@@ -1,7 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import * as tf from '@tensorflow/tfjs';
-import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
-import * as poseDetection from '@tensorflow-models/pose-detection';
+import { FaceLandmarker, PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 export default function App() {
   const videoRef = useRef(null);
@@ -73,15 +71,28 @@ export default function App() {
     const init = async () => {
       try {
         setStatus('Loading AI Models...');
-        await tf.ready();
 
-        faceDetector = await faceLandmarksDetection.createDetector(
-          faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-          { runtime: 'tfjs', refineLandmarks: false },
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         );
-        poseDetector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.MoveNet,
-        );
+
+        faceDetector = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+        });
+
+        poseDetector = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numPoses: 1,
+        });
 
         setStatus('Accessing Video Stream...');
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -204,22 +215,26 @@ export default function App() {
       ctx.globalCompositeOperation = 'source-over';
 
       try {
-        const faces = await faceDetector.estimateFaces(videoRef.current, {
-          flipHorizontal: false,
-        });
-        const poses = await poseDetector.estimatePoses(videoRef.current, {
-          flipHorizontal: false,
-        });
+        const timestamp = performance.now();
+        const faceResults = faceDetector.detectForVideo(videoRef.current, timestamp);
+        const poseResults = poseDetector.detectForVideo(videoRef.current, timestamp);
         const now = Date.now();
+
+        const toPixel = (lm) => ({ x: lm.x * videoWidth, y: lm.y * videoHeight });
 
         // 1. Draw Arm Skeleton
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
         ctx.lineWidth = 1;
 
-        if (poses && poses.length > 0) {
-          const pts = poses[0].keypoints;
+        const poseLandmarks = poseResults.landmarks;
+        if (poseLandmarks && poseLandmarks.length > 0) {
+          const pts = poseLandmarks[0].map((lm) => ({
+            x: lm.x * videoWidth,
+            y: lm.y * videoHeight,
+            visibility: lm.visibility,
+          }));
           const drawLine = (a, b) => {
-            if (pts[a].score > 0.3 && pts[b].score > 0.3) {
+            if (pts[a].visibility > 0.3 && pts[b].visibility > 0.3) {
               ctx.beginPath();
               ctx.moveTo(pts[a].x, pts[a].y);
               ctx.lineTo(pts[b].x, pts[b].y);
@@ -227,15 +242,15 @@ export default function App() {
             }
           };
 
-          drawLine(5, 6);
-          drawLine(5, 7);
-          drawLine(7, 9);
-          drawLine(6, 8);
-          drawLine(8, 10);
+          drawLine(11, 12);
+          drawLine(11, 13);
+          drawLine(13, 15);
+          drawLine(12, 14);
+          drawLine(14, 16);
 
-          const activeJoints = [5, 6, 7, 8, 9, 10];
+          const activeJoints = [11, 12, 13, 14, 15, 16];
           activeJoints.forEach((i) => {
-            if (pts[i].score > 0.3) {
+            if (pts[i].visibility > 0.3) {
               ctx.beginPath();
               ctx.arc(pts[i].x, pts[i].y, 2, 0, 2 * Math.PI);
               ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
@@ -245,19 +260,20 @@ export default function App() {
         }
 
         // 2. Face Tracking & HUD
-        if (faces && faces.length > 0) {
+        const faceLandmarks = faceResults.faceLandmarks;
+        if (faceLandmarks && faceLandmarks.length > 0) {
           lastFaceDetectedRef.current = now;
-          const keypoints = faces[0].keypoints;
+          const kp = faceLandmarks[0];
 
-          const rTop = keypoints[159];
-          const rBot = keypoints[145];
-          const rIn = keypoints[133];
-          const rOut = keypoints[33];
+          const rTop = toPixel(kp[159]);
+          const rBot = toPixel(kp[145]);
+          const rIn  = toPixel(kp[133]);
+          const rOut = toPixel(kp[33]);
 
-          const lTop = keypoints[386];
-          const lBot = keypoints[374];
-          const lIn = keypoints[362];
-          const lOut = keypoints[263];
+          const lTop = toPixel(kp[386]);
+          const lBot = toPixel(kp[374]);
+          const lIn  = toPixel(kp[362]);
+          const lOut = toPixel(kp[263]);
 
           const lCenterX = (lIn.x + lOut.x) / 2;
           const lCenterY = (lTop.y + lBot.y) / 2;
