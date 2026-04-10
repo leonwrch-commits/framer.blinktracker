@@ -15,6 +15,8 @@ export default function App() {
   const [status, setStatus] = useState('Initializing System...');
   const [isFatigued, setIsFatigued] = useState(false);
   const [isResting, setIsResting] = useState(false);
+  const [mode, setMode] = useState('camera'); // 'camera' | 'johncena'
+  const [isBlinking, setIsBlinking] = useState(false);
 
   // Logic Refs
   const blinkDatesRef = useRef([]);
@@ -317,6 +319,7 @@ export default function App() {
           }
 
           const isBlinkingNow = avgEAR < adaptiveThresholdRef.current;
+          setIsBlinking(isBlinkingNow);
 
           // MATRIX SCRAMBLE TRIGGER
           if (isBlinkingNow && !wasBlinkingRef.current) {
@@ -484,8 +487,23 @@ export default function App() {
 
   return (
     <div style={containerStyle}>
-      <video ref={videoRef} style={videoStyle} muted playsInline />
-      <canvas ref={canvasRef} style={canvasStyle} />
+      <video ref={videoRef} style={{ ...videoStyle, display: mode === 'camera' ? 'block' : 'none' }} muted playsInline />
+      <canvas ref={canvasRef} style={{ ...canvasStyle, display: mode === 'camera' ? 'block' : 'none' }} />
+
+      {mode === 'johncena' && (
+        <img
+          src={isBlinking ? '/JCclosed.png' : '/JCopen.png'}
+          style={jcStyle}
+          alt="John Cena"
+        />
+      )}
+
+      <button
+        onClick={() => setMode(m => m === 'camera' ? 'johncena' : 'camera')}
+        style={modeToggleStyle}
+      >
+        {mode === 'camera' ? 'JC MODE' : 'CAM MODE'}
+      </button>
 
       {/* HUD Container (Top Left) */}
       <div style={leftHudStyle}>
@@ -597,6 +615,31 @@ const canvasStyle = {
   objectFit: 'cover',
   transform: 'scaleX(-1)',
   zIndex: 1,
+};
+
+const jcStyle = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  width: '100%',
+  height: '100%',
+  objectFit: 'cover',
+};
+
+const modeToggleStyle = {
+  position: 'absolute',
+  bottom: 'clamp(15px, 3vh, 30px)',
+  right: 'clamp(15px, 3vw, 30px)',
+  zIndex: 10,
+  fontFamily: '"JetBrains Mono", monospace',
+  fontSize: 'clamp(10px, 1.5vw, 12px)',
+  background: 'rgba(0,0,0,0.6)',
+  color: '#fff',
+  border: '1px solid rgba(255,255,255,0.3)',
+  borderRadius: '4px',
+  padding: '8px 14px',
+  cursor: 'pointer',
+  letterSpacing: '0.05em',
 };
 
 const leftHudStyle = {
